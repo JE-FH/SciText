@@ -1,3 +1,5 @@
+local json = require("json")
+
 function Enum(t)
     for k, v in pairs(t) do
         t[v] = k
@@ -42,13 +44,13 @@ end
 
 local TokenStream = {};
 
-function TokenStream:New(originalInput, parseFunction)
+function TokenStream:New(originalInput, parseFunction, startIndex)
     local o = {
         tokens = {},
         currentIndex = 1,
         originalInput = originalInput,
         parseFunction = parseFunction,
-        currentInputIndex = 1
+        currentInputIndex = startIndex
     }
     setmetatable(o, self)
     self.__index = self
@@ -80,17 +82,23 @@ function TokenStream:Pop()
     return rv
 end
 
-function TokenStream:AcceptType(type)
+function TokenStream:AcceptType(_type)
     local popped = self:Pop()
-    if popped.type ~= type then
+    if popped.type ~= _type then
         print(self.originalInput:sub(popped.start))
-        error(("Expected %s at %i got %s"):format(TokenType[type], popped.start, TokenType[popped.type]))
+        --There is some kind of lua bug where print is needed here, else TokenType[_type] is nil
+        print(_type, popped.type)
+        error(("Expected %s at %i got %s"):format(TokenType[_type], popped.start, TokenType[popped.type]))
     end
     return popped
 end
 
 function TokenStream:GetRemainingInput()
     return self.originalInput:sub(self.currentInputIndex)
+end
+
+function TokenStream:GetInputIndex()
+    return self.currentInputIndex
 end
 
 local NonTerminal = {}
@@ -149,15 +157,16 @@ function lexParseFunction(inputString, currentIndex)
         --for this version § are not handled since that require unicode
         local match = inputString:match("^[^0-9 )(\",\n\r][^ )(\",\n\r]*", currentIndex)
         if match == nil then
-            print(inputString:sub(currentIndex))
+            print(inputString:sub(currentIndex, 20))
+            print(utf8.codepoint(inputString, currentIndex))
             error("Unrecognized token at " .. tostring(currentIndex))
         end
         return Token:New(TokenType.IDENTIFIER, match, currentIndex, currentIndex + #match - 1)
     end
 end
 
-function lex(inputString)
-    return TokenStream:New(inputString, lexParseFunction)
+function lex(inputString, startIndex)
+    return TokenStream:New(inputString, lexParseFunction, startIndex)
 end
 
 
@@ -200,9 +209,16 @@ end
 
 function ParseInnerActualArguments(tokenStream)
     local rv = NonTerminal:New(NonTerminalType.InnerActualArguments)
-
-    rv.expr = ParseExpr(tokenStream);
-    rv.nextArgument = ParseNextArgument(tokenStream);
+    local next = tokenStream:Peek()
+    if next.type == TokenType.IDENTIFIER or next.type == TokenType.STRINGLITTERAL then
+        rv.expr = ParseExpr(tokenStream);
+        rv.nextArgument = ParseNextArgument(tokenStream);
+    elseif next.type == TokenType.RPAREN then
+        return nil
+    else 
+        print(("Unexpected token at %i"):format(next.start))
+        error("expected, IDENTIFIER, STRINGLITTERAL or RPAREN")
+    end
 
     return rv
 end
@@ -234,7 +250,7 @@ function ParseExpr2(tokenStream)
     elseif next.type == TokenType.LPAREN then
         rv.functionCall = ParseFunctionCall(tokenStream)
     else
-        print(("Unexpected token at %i"):format(tokenStream.start))
+        print(("Unexpected token at %i"):format(next.start))
         error("expected, LPAREN, COMMA, RPAREN or EOF")
     end
     return rv;
@@ -264,11 +280,54 @@ end
 
 local inputString = "§header1(textbf(fontsize(\"large\", \"Hello world!\")))\"ksdofk\"";
 
-local tokenStream = lex(inputString)
-local ast = ParseInvocation(tokenStream)
-local nextToken;
+function ParseFile(filename)
+    local f = assert(io.open(filename, "rb"))
+    local content = f:read("*all")
+    f:close()
+    
+    local fragments = {}
+    local currentInputFragment = ""
+    
+    
+    local i = 1;
+    while i <= #content do
+        local codePoint = utf8.codepoint(content, i);
+        local next = utf8.char(codePoint);
+        if next == "§" then
+            if (#currentInputFragment > 0) then
+                fragments[#fragments + 1] = currentInputFragment
+                currentInputFragment = ""
+            end
+            local tokenStream = lex(content, i)
+            local ast = ParseInvocation(tokenStream)
 
+            i = tokenStream:GetInputIndex()
 
-dumpTable(ast, 0)
+            fragments[#fragments + 1] = ast
+        else
+            currentInputFragment = currentInputFragment .. next
+            i = i + #next
+        end
+    end
+    if (#currentInputFragment > 0) then
+        fragments[#fragments + 1] = currentInputFragment
+        currentInputFragment = ""
+    end
+    return fragments
+end
 
-print(tokenStream:GetRemainingInput())
+local fragments = ParseFile("test.st")
+
+local processed = ""
+
+for k, v in pairs(fragments) do
+    if (type(v) == "table") then
+        processed = processed .. json.encode(v)
+    else
+        processed = processed .. v
+    end
+end
+
+local outFile = io.open("test.out", "w")
+outFile:write(processed .. "\n")
+outFile:close();

@@ -1,4 +1,4 @@
-§assign("mail", "jane@example.com")
+§assign("mail", "bob@example.com")
 §assign("mobil", "+4512345678")
 §assign("linkedin", "je-fh")
 §assign("linkedinurl", "https://www.linkedin.dk/in/")
@@ -8,7 +8,7 @@
 §assign("shælllink", "https://github.com/Coffee-Hotel-Spa/shaell-interpreter")
 §table("r", width=bodywidth, §(
     Jens Emil Fink Højriis ;;
-    Foo Barsen vej 42 ;;
+    Foo Barsen Vej 42 ;;
     Bazborg, 1234 ;;
     §href("mailto:${mail}", mail) ;;
     §href("tel:${mobil}", formatphone(mobil, "dk"))

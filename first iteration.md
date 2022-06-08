@@ -21,7 +21,7 @@ IDENTIFIER := [^0-9 )(",§\n\r][^ )(",§\n\r]*
 ```
 Invocation ::= INVOKE ExprBase FunctionCall
 ActualArguments ::= LPAREN InnerActualArguments RPAREN
-InnerActualArguments ::= Expr NextArgument
+InnerActualArguments ::= Expr NextArgument | epsilon
 NextArgument ::= COMMA InnerActualArguments | epsilon
 Expr ::= ExprBase Expr2
 Expr2 ::= FunctionCall | epsilon
