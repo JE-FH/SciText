@@ -14,16 +14,17 @@ LPAREN = '('
 RPAREN = ')'
 COMMA = ','
 STRINGLITTERAL = '"' ([^"\\] | '\\' . )* '"'
-IDENTIFIER := [^0-9()",§][^ ()",§]*
+IDENTIFIER := [^0-9 )(",§\n\r][^ )(",§\n\r]*
 ```
 
 ### Grammar
 ```
-Call ::= INVOKE ExprEXPR
+Invocation ::= INVOKE ExprBase FunctionCall
 ActualArguments ::= LPAREN InnerActualArguments RPAREN
 InnerActualArguments ::= Expr NextArgument
 NextArgument ::= COMMA InnerActualArguments | epsilon
-Expr ::= IDENTIFIER Expr2 
+Expr ::= ExprBase Expr2
 Expr2 ::= FunctionCall | epsilon
+ExprBase ::= IDENTIFIER | STRINGLITTERAL
 FunctionCall ::= ActualArguments
 ```
