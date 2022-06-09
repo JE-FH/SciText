@@ -1,5 +1,10 @@
 local json = require("json")
 
+function printf(str, ...)
+    local args = {...}
+    print(str:format(table.unpack(args)))
+end
+
 function Enum(t)
     for k, v in pairs(t) do
         t[v] = k
@@ -14,7 +19,9 @@ local TokenType = Enum({
     COMMA = 4,
     STRINGLITTERAL = 5,
     IDENTIFIER = 6,
-    EOF = 7
+    EOF = 7,
+    STARTBLOCK = 8,
+    ENDBLOCK = 9
 })
 
 local NonTerminalType = Enum({
@@ -67,16 +74,18 @@ function TokenStream:Peek()
             local token = self.parseFunction(self.originalInput, self.currentInputIndex)
             self.currentInputIndex = token.stop + 1
             self:Append(token)
-        else
-            self:Append(Token:New(TokenType.EOF, "EOF", self.currentInputIndex, self.currentInputIndex))
         end
     end
-   return self.tokens[self.currentIndex] 
+    local token = self.tokens[self.currentIndex]
+    if token == nil then
+        return Token:New(TokenType.EOF, "EOF", self.currentInputIndex, self.currentInputIndex);
+    end
+    return token
 end
 
 function TokenStream:Pop()
     local rv = self:Peek()
-    if (rv ~= nil) then
+    if (rv.type ~= TokenType.EOF) then
         self.currentIndex = self.currentIndex + 1
     end
     return rv
@@ -85,12 +94,25 @@ end
 function TokenStream:AcceptType(_type)
     local popped = self:Pop()
     if popped.type ~= _type then
-        print(self.originalInput:sub(popped.start))
-        --There is some kind of lua bug where print is needed here, else TokenType[_type] is nil
-        print(_type, popped.type)
-        error(("Expected %s at %i got %s"):format(TokenType[_type], popped.start, TokenType[popped.type]))
+        self:Error({_type}, popped)
     end
     return popped
+end
+
+function TokenStream:Error(expectedTokens, receivedToken)
+    local message ="Expected one of ";
+    for k, v in pairs(expectedTokens) do
+        message = message .. tostring(TokenType[v]) .. " "
+    end
+
+    message = message .. "but got " .. tostring(TokenType[receivedToken.type])
+
+    print(message)
+    printf("Token value: %s", receivedToken.literalValue)
+    printf("%s", self.originalInput:sub(math.max(1, receivedToken.start - 10), math.min(receivedToken.stop + 10, #self.originalInput)))
+    print("          ^");
+    printf("Error happened at %i", receivedToken.start)
+    error("Syntax error")
 end
 
 function TokenStream:GetRemainingInput()
@@ -119,7 +141,14 @@ function lexParseFunction(inputString, currentIndex)
         -- a bit of a hack
         return lexParseFunction(inputString, currentIndex + 1)
     elseif next == "§" then
-        return Token:New(TokenType.INVOKE, "§", currentIndex, currentIndex + 1)
+        local nextnext = utf8.char(utf8.codepoint(inputString, currentIndex + #next))
+        if (nextnext == "(") then
+            return Token:New(TokenType.STARTBLOCK, "§(", currentIndex, currentIndex + #next + #nextnext - 1)
+        elseif (nextnext == ")") then
+            return Token:New(TokenType.ENDBLOCK, "§)", currentIndex, currentIndex + #next + #nextnext - 1)
+        else
+            return Token:New(TokenType.INVOKE, "§", currentIndex, currentIndex + #next - 1)
+        end
     elseif next == "(" then
         return Token:New(TokenType.LPAREN, "(", currentIndex, currentIndex)
     elseif next == ")" then
@@ -133,7 +162,7 @@ function lexParseFunction(inputString, currentIndex)
         local start = currentIndex;
         currentIndex = currentIndex + 1;
         while true do
-            local match = inputString:match("^[^\"\\]+", currentIndex);
+            local match = inputString:match("^[^\"\\\n\r]+", currentIndex);
             if match ~= nil then
                 acc = acc .. match
                 currentIndex = currentIndex + #match
@@ -157,6 +186,10 @@ function lexParseFunction(inputString, currentIndex)
         --for this version § are not handled since that require unicode
         local match = inputString:match("^[^0-9 )(\",\n\r][^ )(\",\n\r]*", currentIndex)
         if match == nil then
+            printf("Unrecognized token at %i", currentIndex)
+            printf("%s", inputString:sub(math.max(1, currentIndex - 10), math.min(currentIndex + 10, #inputString)))
+            print("          ^");
+            error("Syntax error")
             print(inputString:sub(currentIndex, 20))
             print(utf8.codepoint(inputString, currentIndex))
             error("Unrecognized token at " .. tostring(currentIndex))
@@ -210,14 +243,14 @@ end
 function ParseInnerActualArguments(tokenStream)
     local rv = NonTerminal:New(NonTerminalType.InnerActualArguments)
     local next = tokenStream:Peek()
-    if next.type == TokenType.IDENTIFIER or next.type == TokenType.STRINGLITTERAL then
+    if next.type == TokenType.IDENTIFIER or next.type == TokenType.STRINGLITTERAL or next.type == TokenType.STARTBLOCK then
         rv.expr = ParseExpr(tokenStream);
         rv.nextArgument = ParseNextArgument(tokenStream);
     elseif next.type == TokenType.RPAREN then
         return nil
     else 
         print(("Unexpected token at %i"):format(next.start))
-        error("expected, IDENTIFIER, STRINGLITTERAL or RPAREN")
+        tokenStream:Error({TokenType.IDENTIFIER, TokenType.STRINGLITTERAL, TokenType.STARTBLOCK}, next);
     end
 
     return rv
@@ -250,8 +283,7 @@ function ParseExpr2(tokenStream)
     elseif next.type == TokenType.LPAREN then
         rv.functionCall = ParseFunctionCall(tokenStream)
     else
-        print(("Unexpected token at %i"):format(next.start))
-        error("expected, LPAREN, COMMA, RPAREN or EOF")
+        tokenStream:Error({TokenType.LPAREN, TokenType.COMMA, TokenType.RPAREN, TokenType.EOF}, next);
     end
     return rv;
 end
@@ -263,9 +295,11 @@ function ParseExprBase(tokenStream)
         rv.identifier = tokenStream:AcceptType(TokenType.IDENTIFIER);
     elseif next.type == TokenType.STRINGLITTERAL then
         rv.str = tokenStream:AcceptType(TokenType.STRINGLITTERAL);
+    elseif next.type == TokenType.STARTBLOCK then
+        tokenStream:AcceptType(TokenType.STARTBLOCK);
+        rv.fragments, tokenStream.currentInputIndex = ParseFraments(tokenStream.originalInput, tokenStream:GetInputIndex())
     else
-        print(("Unexpected token at %i"):format(next.start))
-        error("expected, IDENTIFIER or STRINGLITTERAL")
+        tokenStream:Error({TokenType.IDENTIFIER, TokenType.STRINGLITTERAL, TokenType.STARTBLOCK}, next);
     end
     return rv;
 end
@@ -280,16 +314,14 @@ end
 
 local inputString = "§header1(textbf(fontsize(\"large\", \"Hello world!\")))\"ksdofk\"";
 
-function ParseFile(filename)
-    local f = assert(io.open(filename, "rb"))
-    local content = f:read("*all")
-    f:close()
-    
+
+function ParseFraments(content, startIndex)
+    startIndex = startIndex or 1
     local fragments = {}
     local currentInputFragment = ""
     
     
-    local i = 1;
+    local i = startIndex;
     while i <= #content do
         local codePoint = utf8.codepoint(content, i);
         local next = utf8.char(codePoint);
@@ -298,12 +330,22 @@ function ParseFile(filename)
                 fragments[#fragments + 1] = currentInputFragment
                 currentInputFragment = ""
             end
-            local tokenStream = lex(content, i)
-            local ast = ParseInvocation(tokenStream)
-
-            i = tokenStream:GetInputIndex()
-
-            fragments[#fragments + 1] = ast
+            local nextnext = utf8.char(utf8.codepoint(content, i + #next))
+            if (nextnext == ")") then
+                i = i + #next + #nextnext
+                break;
+            elseif (nextnext == "(") then
+                local newFragments;
+                newFragments, i = ParseFraments(content, i + #next + #nextnext)
+                fragments[#fragments+1] = newFragments
+            else
+                local tokenStream = lex(content, i)
+                local ast = ParseInvocation(tokenStream)
+    
+                i = tokenStream:GetInputIndex()
+    
+                fragments[#fragments + 1] = ast
+            end
         else
             currentInputFragment = currentInputFragment .. next
             i = i + #next
@@ -313,8 +355,17 @@ function ParseFile(filename)
         fragments[#fragments + 1] = currentInputFragment
         currentInputFragment = ""
     end
-    return fragments
+    return fragments, i
 end
+
+function ParseFile(filename)
+    local f = assert(io.open(filename, "rb"))
+    local content = f:read("*all")
+    f:close()
+    
+    return ParseFraments(content)
+end
+
 
 local fragments = ParseFile("test.st")
 
@@ -328,6 +379,6 @@ for k, v in pairs(fragments) do
     end
 end
 
-local outFile = io.open("test.out", "w")
+local outFile = assert(io.open("test.out", "w"))
 outFile:write(processed .. "\n")
-outFile:close();
+outFile:close()
